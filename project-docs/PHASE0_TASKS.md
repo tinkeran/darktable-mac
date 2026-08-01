@@ -7,7 +7,9 @@ Tracking checklist for Phase 0 as defined in [PRD.md](PRD.md#9-mvp-phasing-recom
 - [x] Fork `darktable-org/darktable` → `tinkeran/darktable-mac` on GitHub
 - [x] Clone locally to `~/Documents/darktable-mac`
 - [x] Init submodules (LibRaw, OpenCL, libxcf, lua-scripts, rawspeed, whereami, tests/integration)
-- [ ] Confirm local build succeeds on Apple Silicon (deps: cmake + Homebrew build stack; see `.github/workflows/ci.yml` macOS job for the reference dependency list)
+- [x] Confirm local build succeeds on Apple Silicon — built clean on first try via `./build.sh` using the official Homebrew dependency list (`.ci/Brewfile`, 46 packages) and `packaging/macosx/1_install_hb_dependencies.sh` as reference. `curl` and `libarchive` are keg-only on this Homebrew install, so `PKG_CONFIG_PATH`/`CMAKE_PREFIX_PATH` had to include `/opt/homebrew/opt/{curl,libarchive}` explicitly.
+  - Result: `darktable 5.7.0+193~g8bc475111c [mac]` — OpenCL, LibRaw 0.22.0, Lua, gPhoto2 (tethering), OSMGpsMap, GMIC, GraphicsMagick, libavif/libheif/libjxl/OpenJPEG/OpenEXR/WebP all enabled. AI disabled (expected — off by default, `-DUSE_AI=ON` needed later for Phase 2/3).
+  - Build is un-installed (default `build.sh` behavior); binary runs directly from `build/bin/darktable`.
 - [x] Confirm CI already covers macOS (Apple Silicon) builds — see `.github/workflows/ci.yml` `macOS` job (`macos-15`, Xcode 26.3, arm64). No new workflow needed for Phase 0.
 
 ## Baseline audit — does it already work out of the box?
