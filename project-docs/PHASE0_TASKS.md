@@ -14,21 +14,37 @@ Tracking checklist for Phase 0 as defined in [PRD.md](PRD.md#9-mvp-phasing-recom
 
 ## Baseline audit — does it already work out of the box?
 
-For each PRD section, check current darktable behavior and note gaps.
+Audited by source inspection against commit `8bc475111c` (master). File:line references below.
 
-- [ ] **6.1 Import & Organization** — film rolls / collections grouped by import date; dedup on import; EXIF capture-date vs import-date filtering
-- [ ] **6.2 Keep/delete triage + 5-star rating** — audit darktable's existing reject (`r` key) / star-rating flow specifically against the **permanent-delete-to-macOS-Trash** requirement. Confirm whether "purge"/remove-from-library currently unlinks files directly vs. leaves them on disk vs. does nothing to the file. This is the key gap expected per PRD §8a/§10.
-- [ ] **6.3 Non-destructive editing engine** — confirm edit stack / history stack behavior matches expectations (it should, natively)
-- [ ] **6.4 Crop & align** — confirm auto horizon/perspective straightening exists or needs a module
-- [ ] **6.5 Histogram editing** — confirm tone curve, exposure/contrast/highlights/whites/shadows/blacks, white balance are all present (expected: yes, natively)
-- [ ] **6.6 Shadow/highlight recovery** — confirm existing tone equalizer / shadows-highlights module covers this; check dehaze/clarity equivalent
-- [ ] **6.10 Mass export to JPEG** — confirm batch export UI covers resolution, quality, color space, watermark, metadata stripping, filename pattern, async/background export with progress
+- [x] **6.2a Delete-to-Trash — ALREADY SOLVED, better than the PRD assumed.** darktable has three distinct actions in `src/control/jobs/control_jobs.c`:
+  - **Remove** (`dt_control_remove_images()`, `control_jobs.c:2088`) — DB row only, file untouched (dialog explicitly says "without deleting files on disk", `control_jobs.c:2106-2107`).
+  - **Delete** (`dt_control_delete_images()`, `control_jobs.c:2118`) — physically removes via `delete_file_from_disk()` (`control_jobs.c:1138`), gated by a `send_to_trash` preference (`control_jobs.c:1145`; UI toggle "delete (trash)", `src/libs/image.c:304-309`). On macOS this calls `dt_osx_file_trash()` (`src/osx/osx.mm`) — i.e. **real Trash support already exists**, not a hard unlink. Falls back to a "delete permanently" prompt if trashing fails (`control_jobs.c:1054-1096`).
+  - **Reject** (star=0 flag) never deletes/trashes by itself — purely a flag (`src/common/ratings.c`).
+  - **Correction to PRD §8a/§10/§12**: the "permanent delete → Trash" behavior called out as the expected Phase 1 gap **does not need to be built** — just needs to be enabled by default / exposed clearly in this fork's default preferences. This significantly shrinks Phase 1 scope.
+  - **Real gap found instead**: no RAW+JPEG-pair-aware delete. `dt_image_find_duplicates()` (`src/common/image.h:460`) handles multiple *edits/XMPs of the same source*, and sidecar `.xmp` cleanup on delete is handled (`control_jobs.c:1298-1333`), but a same-basename RAW+JPEG pair (e.g. shooting RAW+JPEG simultaneously) are two independent film-roll entries — deleting one does not touch the other. This is genuine net-new work for PRD §6.2's "RAW+JPEG pairs deleted together" requirement.
+- [x] **6.2b 5-star rating — ALREADY SOLVED.** `src/common/ratings.c` implements 0–5 stars and reject as independent bits (`_ratings_apply_to_image()`, `ratings.c:58-80`; enum in `src/views/view.h:159-165`). Keyboard shortcuts 0–5 and `r` registered in `src/libs/tools/ratings.c:112-118`.
+- [x] **6.1a Capture-date vs import-date — ALREADY SOLVED.** `dt_image_t` has independent `exif_datetime_taken` (`src/common/image.h:284`) and `import_timestamp` (`src/common/image.h:314`); both filterable as collection properties (`DT_COLLECTION_PROP_IMPORT_TIMESTAMP`, `src/common/collection.h:89`).
+- [ ] **6.1b By-date folder organization on import — GAP.** Film rolls (`src/common/film.c`) are just the folder files already live in; there's no auto-copy into a `YYYY/MM/DD`-style tree on regular import (the date-pattern folder logic in `src/libs/import.c:1977-1998` is tethering-only). **Net-new work** if a Lightroom-style "By Date" physical folder layout is wanted, vs. just a virtual by-date collection view (which collections already give you for free via capture/import timestamp filtering).
+- [ ] **6.1c Dedup on import — PARTIAL.** Import UI flags likely-already-imported files (checkmark column, `DT_IMPORT_UI_EXISTS`) via `dt_metadata_already_imported(basename, exif_datetime)` (`src/common/metadata.c:842`) — filename+capture-time match, not a checksum. It's advisory only (user must manually deselect, doesn't auto-skip). **Gap**: true checksum-based dedup + auto-skip is net-new work if required; current behavior may be "good enough."
+- [x] **6.3 Non-destructive editing engine** — inherited/native to darktable (edit stack, history, XMP sidecars); not separately re-verified beyond what Phase 0 build already confirms compiles and runs.
+- [x] **6.4 Crop & align — ALREADY SOLVED.** `src/iop/clipping.c` (crop) + `src/iop/ashift.c` (perspective/horizon) with genuine **automatic** line-structure detection (LSD line detection in `src/iop/ashift_lsd.c` + Nelder-Mead fit in `src/iop/ashift_nmsimplex.c`, entry point `do_fit()` at `ashift.c:5576`), not just manual angle entry. Auto-crop mode (`ASHIFT_CROP_LARGEST`) also exists.
+- [x] **6.5 Histogram editing — ALREADY SOLVED.** `src/iop/exposure.c`, `src/iop/tonecurve.c`, `src/iop/temperature.c` (white balance) all present. Live RGB/luminance/waveform/vectorscope histogram widget in `src/libs/histogram.c`.
+- [x] **6.6 Shadow/highlight recovery — ALREADY SOLVED.** `src/iop/shadhi.c`, `src/iop/toneequal.c`, `src/iop/hazeremoval.c` (dehaze) all present. Clarity/local-contrast equivalent: `src/iop/bilat.c` (local contrast) and `src/iop/highpass.c`.
+- [x] **6.10 Mass export to JPEG — ALREADY SOLVED, comprehensive.** `src/libs/export.c` UI + async job (`_control_export_job_run`, `control_jobs.c:1830`, queued on `DT_JOB_QUEUE_USER_EXPORT`) with progress reporting. Confirmed configurable: max width/height (`export.c:375-376`), JPEG quality (piped to `jpeg_set_quality()`, `src/imageio/format/jpeg.c:52,204`), color space/ICC profile incl. sRGB/AdobeRGB (`export.c:1598-1600,2156`), watermark (as an IOP module, `src/iop/watermark.c`, bakeable via style/preset), GPS/metadata stripping (`src/libs/export_metadata.c:194-195,269,314`), filename pattern with variables (`dt_variables_expand()`, `src/imageio/storage/disk.c:386`).
 
-## Not yet started (Phase 2/3 scope, not Phase 0)
+## Phase 1 scope — revised based on this audit
+
+Original PRD §9 assumed Phase 1's main net-new work was the trash-delete workflow. That's already built. Actual net-new Phase 1 candidates, in priority order:
+1. RAW+JPEG-pair-aware delete/trash (6.2 gap above) — small, well-scoped.
+2. Decide whether by-date **virtual** collection view (already free via `import_timestamp`/capture-date filtering) is sufficient, or whether a physical by-date folder copy on import (6.1b) is actually required — recommend defaulting to virtual/collection-based and dropping the folder-copy requirement unless there's a specific reason to keep it.
+3. Decide whether the existing filename+datetime advisory dedup (6.1c) is sufficient, or checksum-based auto-skip dedup is worth building.
+4. Set fork defaults: enable `send_to_trash` by default, make delete confirmation copy match PRD §6.2 wording (count/preview before trash).
+
+## Not yet started (Phase 2/3 scope, not Phase 0/1)
 
 - Sky/person segmentation (SAM 2 / AI object mask)
 - LaMa content-aware fill (tracks upstream [darktable-org/darktable#15006](https://github.com/darktable-org/darktable/issues/15006))
 
 ## Notes
 
-Log findings from each audit item here as they're completed, with darktable version/commit tested against.
+Audited against commit `8bc475111c` (fork's `master`, based on upstream `darktable-org/darktable` master as of 2026-08-01). Full audit performed via source-code inspection (Explore agent), not live GUI testing — GUI behaviors (dialogs, exact wording, preference locations) should be spot-checked by actually running `build/bin/darktable` before Phase 1 work starts.
