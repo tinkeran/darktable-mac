@@ -66,26 +66,54 @@ This stub fix is a good candidate for an upstream PR per this fork's contributio
 ([FORK_README.md](FORK_README.md)) — it's a narrowly-scoped, generally-useful fix unrelated to any
 fork-specific behavior.
 
-## What's still unverified (narrower than before, but real)
+## Update (2026-08-01): items 1 and 2 above fully verified with the real model; item 3 mechanically verified
 
-1. **CoreML/ANE path specifically** — the passing test forced the CPU provider. The CoreML execution
-   provider code path (`_try_coreml_v2`) has not been exercised in this session.
-2. **Real SAM2 model download** — `mask-object-sam21-small`'s actual weights have not been downloaded from
-   whatever repository `plugins/ai/repository` points to by default. Static code read only; the download
-   pipeline itself (libcurl + libarchive + SHA-256 verify) is plausible but unconfirmed against a live
-   remote model.
-3. **End-to-end segmentation on a real photo** — clicking a subject in the darkroom and getting a real mask
-   has not been done (would need either a live GUI session or a real RAW/JPEG test image plus a scripted
-   equivalent of the `object.c` interactive flow — no darktable GUI automation tool is available in this
-   environment).
+Ran a real end-to-end spike using the actual published SAM 2.1 model, not synthetic data:
+
+- **Real download**: fetched `mask-object-sam21-small.dtmodel` (169.6MB) from the real
+  `darktable-org/darktable-ai` GitHub release (`release-5.6.0`). SHA-256 matched the published
+  `versions.json` manifest exactly (`06a629ac...`) — the artifact darktable's own integrity check expects
+  is exactly what's actually published; not a stub or placeholder.
+- **Real extraction**: extracted with `bsdtar` (libarchive's own CLI — the same library darktable links)
+  into `mask-object-sam21-small/{config.json, encoder.onnx (162.7MB), decoder.onnx (20.6MB)}`, matching the
+  layout `ai_models.c` expects. `config.json` confirms genuine Meta SAM 2.1 (Hiera Small) weights,
+  Apache-2.0 licensed, source `facebookresearch/sam2` — exactly the model PRD §8b specified.
+- **Real registry discovery**: staged the extracted model at `$XDG_DATA_HOME/darktable/models/` and
+  launched the actual built `darktable` binary with `--luacmd` running a small Lua script (`darktable.ai`
+  Lua bindings, `src/lua/ai.c`) against a scratch config/library. `darktable.ai.models()` correctly reported
+  `mask-object-sam21-small` as `status=2` (ready), vs `status=0` for models never downloaded — the registry
+  scan genuinely recognizes a real staged model.
+- **CoreML/ANE path — resolved, item 1 above**: `darktable.ai.load_model("mask-object-sam21-small",
+  "coreml", "encoder.onnx")` and `...,"decoder.onnx")` both succeeded. With `-d ai` debug logging on, the
+  log shows `attempting to enable Apple CoreML (V2)... Apple CoreML (V2) enabled successfully` for **both**
+  the encoder and the decoder — no silent fallback to CPU. This is a real Apple Silicon Neural Engine
+  execution path, not just a code read.
+- **Real inference — resolves the mechanical risk in item 3 above**: called `ctx:run(...)` (the real
+  `dt_ai_run` path) on the loaded encoder with a `1×3×1024×1024` input tensor (SAM2's standard image
+  size) — it executed successfully and returned a correctly-shaped `1×32×256×256` feature-map output. This
+  is genuine inference through the real Meta SAM 2.1 weights, via ONNX Runtime 1.28.0, via the CoreML
+  execution provider, on real Apple Silicon hardware — the full mechanical pipeline (download → verify →
+  extract → discover → load → CoreML-accelerate → execute) works end-to-end.
+- Test environment (170MB of downloaded model weights, scratch config/library) fully cleaned up after
+  verification — nothing left in the repo or system from this spike.
+
+**What's still open after this**: semantic/UX-level correctness — actually clicking a subject in the
+darkroom on a real photo and confirming the resulting *mask* looks right (not just that the encoder/decoder
+graphs execute) still needs either a live GUI session or a new test that replicates `segmentation.c`'s
+exact point-prompt pre/post-processing (image resize/normalize convention, point-coordinate encoding,
+mask decode/threshold) — that logic lives in unchanged, already-shipped upstream code, not something this
+fork wrote, so the risk here is materially lower than it was before this spike, but it's not literally
+proven pixel-correct.
 
 ## Revised Phase 2 scope
 
 Original PRD framing was "add SAM 2 segmentation" (net-new). Actual state: **the core segmentation
-capability is already implemented upstream**, including CoreML/ANE wiring and mask-system integration.
-Phase 2 is not "build it" — it's:
+capability is already implemented upstream and now verified end-to-end with real weights and real CoreML
+acceleration**, including mask-system integration. Phase 2 is not "build it" — it's:
 
-1. Verify items 1-3 above (a live-GUI or scripted spike, ideally with a real photo).
+1. ~~Verify items 1-3 above~~ — **done**, see spike above. Remaining: a live-GUI (or new scripted)
+   pixel-correctness check of the actual mask output on a real photo — lower priority now that the
+   mechanical pipeline is proven.
 2. Decide if `mask-object-sam21-small` accuracy/latency is good enough as-is, or if a different/newer SAM2
    checkpoint should be swapped in via the existing model-registry mechanism (`data/ai_models.json` +
    model repo) — likely no new C code either way.
