@@ -17,6 +17,7 @@
 */
 
 #include "common/ai/segmentation.h"
+#include "common/ai/sky_detect.h"
 #include "common/ai_models.h"
 #include "common/colorspaces.h"
 #include "common/debug.h"
@@ -1119,6 +1120,80 @@ static dt_masks_form_t *_finalize_mask(dt_iop_module_t *module,
   return _register_vectorized_forms(module, forms, signs, d->mask_w, d->mask_h);
 }
 
+// shared by the interactive right-click-to-finalize path and the automatic
+// (e.g. auto-sky) path: commit the current mask (if any), attach it to the
+// module's blend mask group, and exit creation mode. A NULL/absent mask is
+// not an error here -- it just exits creation mode without adding anything,
+// matching the existing right-click-with-nothing-selected behavior.
+static void _finalize_and_exit_creation(dt_iop_module_t *module,
+                                        dt_masks_form_t *form,
+                                        dt_masks_form_gui_t *gui)
+{
+  _object_data_t *d = _get_data(gui);
+
+  // finalize mask (prefer cached preview forms)
+  dt_masks_form_t *new_grp = NULL;
+  if(d && d->preview_forms)
+    new_grp = _finalize_from_preview(module, gui);
+  else if(gui->guipoints_count > 0)
+    new_grp = _finalize_mask(module, form, gui);
+
+  // add the new group to the module's blend mask group
+  if(new_grp)
+  {
+    dt_develop_t *dev = darktable.develop;
+    if(module)
+    {
+      dt_masks_form_t *mod_grp
+        = dt_masks_get_from_id(dev, module->blend_params->mask_id);
+      if(!mod_grp)
+      {
+        mod_grp = dt_masks_create(DT_MASKS_GROUP);
+        gchar *module_label = dt_history_item_get_name(module);
+        snprintf(mod_grp->name, sizeof(mod_grp->name),
+                 _("group '%s'"), module_label);
+        g_free(module_label);
+        dev->forms = g_list_append(dev->forms, mod_grp);
+        module->blend_params->mask_id = mod_grp->formid;
+      }
+      dt_masks_point_group_t *grpt = dt_masks_group_add_form(mod_grp, new_grp);
+      if(grpt)
+        grpt->opacity = dt_conf_get_float("plugins/darkroom/masks/opacity");
+    }
+    dt_dev_add_masks_history_item(dev, module, TRUE);
+  }
+
+  // cleanup and exit creation mode
+  gui->creation = FALSE;
+  gui->creation_continuous = FALSE;
+  gui->creation_continuous_module = NULL;
+
+  _free_data(gui);
+
+  dt_masks_dynbuf_free(gui->guipoints);
+  dt_masks_dynbuf_free(gui->guipoints_payload);
+  gui->guipoints = NULL;
+  gui->guipoints_payload = NULL;
+  gui->guipoints_count = 0;
+
+  dt_control_hinter_message("");
+
+  // exit creation mode and select the new group,
+  // dt_masks_set_edit_mode requires a non-NULL module (it returns
+  // immediately otherwise), so clear the form directly when module
+  // is NULL (standalone mask creation)
+  if(module)
+  {
+    dt_masks_set_edit_mode(module, DT_MASKS_EDIT_FULL);
+    dt_masks_iop_update(module);
+  }
+  else
+  {
+    dt_masks_change_form_gui(NULL);
+  }
+  dt_control_queue_redraw_center();
+}
+
 // --- mask event handlers ---
 
 static int _object_events_mouse_scrolled(dt_iop_module_t *module,
@@ -1270,67 +1345,8 @@ static int _object_events_button_pressed(dt_iop_module_t *module,
       _save_raster_mask(d->mask, d->mask_w, d->mask_h, thresh);
     }
 
-    // right-click: finalize mask (prefer cached preview forms)
-    dt_masks_form_t *new_grp = NULL;
-    if(d && d->preview_forms)
-      new_grp = _finalize_from_preview(module, gui);
-    else if(gui->guipoints_count > 0)
-      new_grp = _finalize_mask(module, form, gui);
-
-    // add the new group to the module's blend mask group
-    if(new_grp)
-    {
-      dt_develop_t *dev = darktable.develop;
-      if(module)
-      {
-        dt_masks_form_t *mod_grp
-          = dt_masks_get_from_id(dev, module->blend_params->mask_id);
-        if(!mod_grp)
-        {
-          mod_grp = dt_masks_create(DT_MASKS_GROUP);
-          gchar *module_label = dt_history_item_get_name(module);
-          snprintf(mod_grp->name, sizeof(mod_grp->name),
-                   _("group '%s'"), module_label);
-          g_free(module_label);
-          dev->forms = g_list_append(dev->forms, mod_grp);
-          module->blend_params->mask_id = mod_grp->formid;
-        }
-        dt_masks_point_group_t *grpt = dt_masks_group_add_form(mod_grp, new_grp);
-        if(grpt)
-          grpt->opacity = dt_conf_get_float("plugins/darkroom/masks/opacity");
-      }
-      dt_dev_add_masks_history_item(dev, module, TRUE);
-    }
-
-    // cleanup and exit creation mode
-    gui->creation = FALSE;
-    gui->creation_continuous = FALSE;
-    gui->creation_continuous_module = NULL;
-
-    _free_data(gui);
-
-    dt_masks_dynbuf_free(gui->guipoints);
-    dt_masks_dynbuf_free(gui->guipoints_payload);
-    gui->guipoints = NULL;
-    gui->guipoints_payload = NULL;
-    gui->guipoints_count = 0;
-
-    dt_control_hinter_message("");
-
-    // exit creation mode and select the new group,
-    // dt_masks_set_edit_mode requires a non-NULL module (it returns
-    // immediately otherwise), so clear the form directly when module
-    // is NULL (standalone mask creation)
-    if(module)
-    {
-      dt_masks_set_edit_mode(module, DT_MASKS_EDIT_FULL);
-      dt_masks_iop_update(module);
-    }
-    else
-    {
-      dt_masks_change_form_gui(NULL);
-    }
-    dt_control_queue_redraw_center();
+    // right-click: finalize mask and exit creation mode
+    _finalize_and_exit_creation(module, form, gui);
     return 1;
   }
 
@@ -1991,6 +2007,73 @@ gboolean dt_masks_object_available(void)
   const gboolean available = model && model->status == DT_AI_MODEL_DOWNLOADED;
   dt_ai_model_free(model);
   return available;
+}
+
+gboolean dt_masks_object_encode_ready(dt_masks_form_gui_t *gui)
+{
+  _object_data_t *d = _get_data(gui);
+  if(!d) return FALSE;
+  const int state = g_atomic_int_get(&d->encode_state);
+  return state == ENCODE_READY || state == ENCODE_ERROR;
+}
+
+gboolean dt_masks_object_auto_sky(dt_iop_module_t *module,
+                                  dt_masks_form_t *form,
+                                  dt_masks_form_gui_t *gui)
+{
+  if(!gui) return FALSE;
+  _object_data_t *d = _get_data(gui);
+  if(!d || !d->seg || !dt_seg_is_encoded(d->seg)
+     || g_atomic_int_get(&d->encode_state) != ENCODE_READY)
+    return FALSE;
+
+  int rgb_w = 0, rgb_h = 0;
+  const uint8_t *rgb = dt_seg_get_encoded_rgb(d->seg, &rgb_w, &rgb_h);
+
+  dt_seg_point_t pts[DT_SKY_DETECT_MAX_POINTS];
+  const int n_points = (rgb && rgb_w > 0 && rgb_h > 0)
+    ? dt_sky_detect_points(rgb, rgb_w, rgb_h, pts) : 0;
+
+  if(n_points == 0)
+  {
+    dt_control_log(_("no sky detected in this image"));
+    _finalize_and_exit_creation(module, form, gui);
+    return FALSE;
+  }
+
+  // heuristic points are in encode-buffer pixel space; guipoints (like
+  // manual clicks) are stored in preview-pipe pixel space -- convert with
+  // the inverse of the scaling _run_decoder applies going the other way
+  float wd = 0, ht = 0, iwidth = 0, iheight = 0;
+  dt_masks_get_image_size(&wd, &ht, &iwidth, &iheight);
+  const float sx = (rgb_w > 0) ? wd / (float)rgb_w : 1.0f;
+  const float sy = (rgb_h > 0) ? ht / (float)rgb_h : 1.0f;
+
+  if(!gui->guipoints)
+    gui->guipoints = dt_masks_dynbuf_init(200000, "object guipoints");
+  if(!gui->guipoints_payload)
+    gui->guipoints_payload = dt_masks_dynbuf_init(100000,
+                                                  "object guipoints_payload");
+  if(!gui->guipoints || !gui->guipoints_payload)
+    return FALSE;
+
+  for(int i = 0; i < n_points; i++)
+  {
+    dt_masks_dynbuf_add_2(gui->guipoints, pts[i].x * sx, pts[i].y * sy);
+    dt_masks_dynbuf_add(gui->guipoints_payload, 1.0f); // foreground
+    gui->guipoints_count++;
+  }
+  d->has_selection = TRUE;
+
+  _run_decoder(gui);
+  if(d->mask)
+    _update_preview(d);
+
+  if(darktable.develop->proxy.masks.module)
+    darktable.develop->proxy.masks.list_change(darktable.develop->proxy.masks.module);
+
+  _finalize_and_exit_creation(module, form, gui);
+  return TRUE;
 }
 
 // clang-format off

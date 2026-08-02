@@ -486,6 +486,18 @@ extern const dt_masks_functions_t dt_masks_functions_group;
 extern const dt_masks_functions_t dt_masks_functions_object;
 /** check if AI object mask model is downloaded and AI is enabled */
 gboolean dt_masks_object_available(void);
+/** TRUE once the object-mask encoder has finished (or failed) for the
+    current image, i.e. dt_masks_object_auto_sky() can be called */
+gboolean dt_masks_object_encode_ready(struct dt_masks_form_gui_t *gui);
+/** heuristically detect sky in the current image and, if found, create
+    and attach a mask for it -- the automatic equivalent of clicking the
+    sky with the interactive AI object tool. Returns FALSE (no mask
+    created, creation mode still exited) if no plausible sky region was
+    found. Must be called with the object-mask encoder ENCODE_READY
+    (see dt_masks_object_encode_ready()). */
+gboolean dt_masks_object_auto_sky(struct dt_iop_module_t *module,
+                                  dt_masks_form_t *form,
+                                  struct dt_masks_form_gui_t *gui);
 #endif
 
 /** init dt_masks_form_gui_t struct with default values */

@@ -59,7 +59,7 @@ typedef struct dt_lib_masks_t
   /* vbox with managed history items */
   GtkWidget *bt_circle, *bt_path, *bt_gradient, *bt_ellipse, *bt_brush;
 #ifdef HAVE_AI
-  GtkWidget *bt_object;
+  GtkWidget *bt_object, *bt_sky;
 #endif
   GtkWidget *treeview;
   dt_gui_collapsible_section_t cs;
@@ -635,6 +635,7 @@ static void _lib_masks_inactivate_icons(dt_lib_module_t *self)
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(lm->bt_brush), FALSE);
 #ifdef HAVE_AI
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(lm->bt_object), FALSE);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(lm->bt_sky), FALSE);
 #endif
 }
 
@@ -690,6 +691,64 @@ static gboolean _bt_add_shape(GtkWidget *widget, GdkEventButton *event, gpointer
   }
   return TRUE;
 }
+
+#ifdef HAVE_AI
+typedef struct _sky_poll_data_t
+{
+  dt_iop_module_t *module;
+  dt_masks_form_t *form;
+} _sky_poll_data_t;
+
+// polls (every 150ms) for the object-mask encoder to finish after
+// _bt_add_sky starts creation + encoding, then runs the automatic sky
+// detection and finalizes the mask -- a one-click equivalent of the
+// manual "click the sky, right-click to finalize" AI object flow
+static gboolean _sky_poll_timeout(gpointer user_data)
+{
+  _sky_poll_data_t *pd = user_data;
+
+  // bail out quietly if the context changed underneath us (user cancelled
+  // creation, selected a different shape, switched images, etc.)
+  if(darktable.develop->form_visible != pd->form
+     || !darktable.develop->form_gui
+     || !darktable.develop->form_gui->creation)
+  {
+    g_free(pd);
+    return G_SOURCE_REMOVE;
+  }
+
+  dt_masks_form_gui_t *gui = darktable.develop->form_gui;
+  if(!dt_masks_object_encode_ready(gui))
+    return G_SOURCE_CONTINUE;
+
+  dt_masks_object_auto_sky(pd->module, pd->form, gui);
+  g_free(pd);
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean _bt_add_sky(GtkWidget *widget, GdkEventButton *event, gpointer user_data)
+{
+  DT_GUARD_GUI_UPDATE(FALSE);
+
+  if(dt_gdk_event_get_button(event) == GDK_BUTTON_PRIMARY)
+  {
+    if(!dt_masks_object_available())
+    {
+      dt_control_log(_("AI model is not available. Check preferences > AI"));
+      return TRUE;
+    }
+
+    _tree_add_shape(NULL, GINT_TO_POINTER(DT_MASKS_OBJECT));
+    _lib_masks_inactivate_icons(darktable.develop->proxy.masks.module);
+
+    _sky_poll_data_t *pd = g_malloc(sizeof(_sky_poll_data_t));
+    pd->module = darktable.develop->form_gui->creation_module;
+    pd->form = darktable.develop->form_visible;
+    g_timeout_add(150, _sky_poll_timeout, pd);
+  }
+  return TRUE;
+}
+#endif
 
 static void _tree_add_exist(GtkButton *button, dt_masks_form_t *grp)
 {
@@ -2321,6 +2380,14 @@ void gui_init(dt_lib_module_t *self)
                    G_CALLBACK(_bt_add_shape), GINT_TO_POINTER(DT_MASKS_OBJECT));
   gtk_widget_set_tooltip_text(d->bt_object, _("add AI object"));
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(d->bt_object), FALSE);
+
+  d->bt_sky = dtgtk_togglebutton_new(dtgtk_cairo_paint_wand, 0, NULL);
+  dt_action_define(DT_ACTION(self), N_("shapes"), N_("add sky (auto)"),
+                   d->bt_sky, &dt_action_def_toggle);
+  g_signal_connect(G_OBJECT(d->bt_sky), "button-press-event",
+                   G_CALLBACK(_bt_add_sky), NULL);
+  gtk_widget_set_tooltip_text(d->bt_sky, _("automatically detect and select the sky"));
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(d->bt_sky), FALSE);
 #endif
 
   d->treeview = gtk_tree_view_new();
@@ -2363,6 +2430,7 @@ void gui_init(dt_lib_module_t *self)
      d->bt_brush, d->bt_circle, d->bt_ellipse, d->bt_path, d->bt_gradient);
 #ifdef HAVE_AI
   dt_gui_box_add(shape_buttons, d->bt_object);
+  dt_gui_box_add(shape_buttons, d->bt_sky);
 #endif
 
   self->widget = dt_gui_vbox
