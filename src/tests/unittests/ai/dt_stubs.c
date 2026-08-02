@@ -36,10 +36,41 @@ void dt_print_ext(const char *msg, ...)
 
 gchar *dt_conf_get_string(const char *name)
 {
-  return g_strdup("cpu");
+  if(name && !strcmp(name, "plugins/ai/provider")) return g_strdup("cpu");
+  return g_strdup("");
+}
+
+gboolean dt_conf_get_bool(const char *name)
+{
+  if(name && !strcmp(name, "plugins/ai/enabled")) return TRUE;
+  return FALSE;
+}
+
+int dt_conf_get_int(const char *name)
+{
+  return 0;
+}
+
+gboolean dt_conf_key_exists(const char *key)
+{
+  return FALSE;
+}
+
+void dt_control_log(const char *msg, ...)
+{
+  va_list ap;
+  va_start(ap, msg);
+  vfprintf(stderr, msg, ap);
+  va_end(ap);
+  fputc('\n', stderr);
 }
 
 void dt_loc_get_user_config_dir(char *configdir, size_t bufsize)
 {
   if(configdir && bufsize > 0) configdir[0] = '\0';
+}
+
+void dt_loc_get_user_cache_dir(char *cachedir, size_t bufsize)
+{
+  if(cachedir && bufsize > 0) cachedir[0] = '\0';
 }
